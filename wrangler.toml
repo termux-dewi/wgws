@@ -1,8 +1,6 @@
-{
-  "name": "wg-ws-bridge",
-  "main": "worker.js", // Nama file script worker Anda
-  "compatibility_date": "2024-01-01",
-  "observability": {
-    "enabled": true
-  }
-}
+name = "wg-ws-bridge"
+main = "index.js"
+compatibility_date = "2024-01-01"
+
+[observability]
+enabled = true
