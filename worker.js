@@ -7,8 +7,8 @@ export default {
     }
 
     // KONFIGURASI SERVER TUJUAN (DARI VPNJANTIT)
-    const remoteHost = 'id1.vpnjantit.com'; // Sesuaikan host dari config WG anda
-    const remotePort = 443; // Coba port 443 (TCP/TLS) atau 80
+    const remoteHost = 'indo.vpnjantit.com'; // Sesuaikan host dari config WG anda
+    const remotePort = 1024; // Coba port 443 (TCP/TLS) atau 80
 
     const [client, server] = Object.values(new WebSocketPair());
     server.accept();
