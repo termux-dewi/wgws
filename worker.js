@@ -1,26 +1,28 @@
 import { connect } from 'cloudflare:sockets';
 
 const VALID_UUID = "eb231f45-8b1a-4b2a-9f1a-5b231f458b1a";
+const SERVICE_NAME = "vless-grpc";
 
 export default {
   async fetch(request, env, ctx) {
-    // Pastikan request adalah POST dan menggunakan content-type gRPC
-    if (request.method === 'POST' && request.headers.get('content-type')?.includes('application/grpc')) {
+    const url = new URL(request.url);
+    const contentType = request.headers.get('content-type') || '';
+
+    // Validasi Service Name melalui URL Path
+    if (url.pathname.includes(SERVICE_NAME) && contentType.includes('application/grpc')) {
       return await handleVLESSgRPC(request, ctx);
     }
-    return new Response('VLESS gRPC Server is Online', { status: 200 });
+
+    return new Response('gRPC Node is On', { status: 200 });
   },
 };
 
 async function handleVLESSgRPC(request, ctx) {
   const { readable, writable } = new TransformStream();
   const reader = request.body.getReader();
-  const writer = writable.getWriter();
-
-  let isConnected = false;
   let remoteSocket = null;
+  let isConnected = false;
 
-  // Fungsi untuk memproses stream dari klien
   const processStream = async () => {
     try {
       while (true) {
@@ -28,15 +30,11 @@ async function handleVLESSgRPC(request, ctx) {
         if (done) break;
 
         if (!isConnected) {
-          // Parsing VLESS Header (Standard Xray/V2Ray)
-          // Index 1-17: UUID
+          // Parsing UUID (Index 1-17)
           const clientUUID = [...value.slice(1, 17)].map(b => b.toString(16).padStart(2, '0')).join('');
-          if (clientUUID !== VALID_UUID.replace(/-/g, '')) {
-            console.log("Unauthorized: UUID Mismatch");
-            break;
-          }
+          if (clientUUID !== VALID_UUID.replace(/-/g, '')) break;
 
-          // Parsing Port (2 bytes) & Address
+          // Parsing Port & Address
           const port = (value[18] << 8) | value[19];
           const addressType = value[20];
           let address = '';
@@ -55,7 +53,7 @@ async function handleVLESSgRPC(request, ctx) {
           remoteSocket = connect({ hostname: address, port: port });
           isConnected = true;
 
-          // Teruskan data payload setelah header
+          // Forward sisa data payload
           const payload = value.slice(addressEnd);
           if (payload.length > 0) {
             const tcpWriter = remoteSocket.writable.getWriter();
@@ -63,17 +61,16 @@ async function handleVLESSgRPC(request, ctx) {
             tcpWriter.releaseLock();
           }
 
-          // Pipe data balik dari server target ke klien
+          // Full Duplex Pipe
           remoteSocket.readable.pipeTo(writable);
         } else {
-          // Kirim data langsung ke target socket
           const tcpWriter = remoteSocket.writable.getWriter();
           await tcpWriter.write(value);
           tcpWriter.releaseLock();
         }
       }
     } catch (err) {
-      console.log("gRPC Stream Error: " + err.message);
+      console.log("Stream Error: " + err.message);
     } finally {
       if (remoteSocket) remoteSocket.close();
     }
