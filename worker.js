@@ -1,48 +1,81 @@
-// Cloudflare Worker: WebSocket Proxy
+import { connect } from 'cloudflare:sockets';
+
 export default {
-  async fetch(request, env) {
+  async fetch(request, env, ctx) {
     const upgradeHeader = request.headers.get('Upgrade');
-    if (!upgradeHeader || upgradeHeader !== 'websocket') {
-      return new Response('Harus menggunakan WebSocket', { status: 426 });
+    
+    // Deteksi jika request adalah gRPC/Stream
+    if (request.headers.get('content-type') === 'application/grpc' || upgradeHeader === 'websocket') {
+      return await vlessOverGRPC(request);
     }
 
-    // KONFIGURASI SERVER TUJUAN (DARI VPNJANTIT)
-    const remoteHost = 'indo.vpnjantit.com'; // Sesuaikan host dari config WG anda
-    const remotePort = 1024; // Coba port 443 (TCP/TLS) atau 80
-
-    const [client, server] = Object.values(new WebSocketPair());
-    server.accept();
-
-    try {
-      // Menggunakan Cloudflare 'connect' API untuk meneruskan trafik
-      const socket = connect(`${remoteHost}:${remotePort}`);
-      const writer = socket.writable.getWriter();
-      const reader = socket.readable.getReader();
-
-      // Forward dari Client (WS) ke VPNJantit (TCP)
-      server.addEventListener('message', async (event) => {
-        await writer.write(event.data);
-      });
-
-      // Forward dari VPNJantit (TCP) ke Client (WS)
-      (async () => {
-        while (true) {
-          const { value, done } = await reader.read();
-          if (done) {
-            server.close();
-            break;
-          }
-          server.send(value);
-        }
-      })();
-
-    } catch (e) {
-      return new Response("Koneksi ke Server Gagal", { status: 503 });
-    }
-
-    return new Response(null, {
-      status: 101,
-      webSocket: client,
-    });
-  }
+    return new Response('VLESS-gRPC Worker is Running', { status: 200 });
+  },
 };
+
+async function vlessOverGRPC(request) {
+  const { readable, writable } = new TransformStream();
+  const writer = writable.getWriter();
+  const reader = request.body.getReader();
+
+  // Handle stream dari Client ke Remote
+  let isHeaderParsed = false;
+  let remoteSocket = null;
+
+  async function processClientStream() {
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        if (!isHeaderParsed) {
+          // Parsing Header VLESS (Sederhana)
+          // [0] Ver, [1-16] UUID, [17] Addons, [18] Command
+          const addressType = value[21]; 
+          let addressLength = 0;
+          let address = '';
+          let portIndex = 19;
+
+          if (addressType === 2) { // Domain Name
+            addressLength = value[22];
+            address = new TextDecoder().decode(value.slice(23, 23 + addressLength));
+            portIndex = 23 + addressLength - 2;
+          }
+
+          const port = (value[portIndex] << 8) | value[portIndex + 1];
+
+          // Buka koneksi ke Target (VPNJantit)
+          remoteSocket = connect({ hostname: address, port: port });
+          isHeaderParsed = true;
+
+          // Teruskan sisa data setelah header
+          const payload = value.slice(portIndex + 2 + addressLength);
+          if (payload.length > 0) {
+            const remoteWriter = remoteSocket.writable.getWriter();
+            await remoteWriter.write(payload);
+            remoteWriter.releaseLock();
+          }
+
+          // Pipe data dari Remote kembali ke Client
+          remoteSocket.readable.pipeTo(writable);
+        } else if (remoteSocket) {
+          const remoteWriter = remoteSocket.writable.getWriter();
+          await remoteWriter.write(value);
+          remoteWriter.releaseLock();
+        }
+      }
+    } catch (err) {
+      console.error('Stream Error:', err);
+    }
+  }
+
+  processClientStream();
+
+  return new Response(readable, {
+    status: 200,
+    headers: {
+      'Content-Type': 'application/grpc',
+      'X-Accel-Buffering': 'no', // Penting untuk streaming instan
+    },
+  });
+}
